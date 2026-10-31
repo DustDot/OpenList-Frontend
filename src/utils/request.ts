@@ -1,4 +1,4 @@
-import axios from "axios"
+import axios, { type InternalAxiosRequestConfig } from "axios"
 import { api, log } from "."
 
 const instance = axios.create({
@@ -23,6 +23,10 @@ instance.interceptors.request.use(
   },
 )
 
+type BodyRetryConfig = InternalAxiosRequestConfig & {
+  _openlistBodyRetried?: boolean
+}
+
 // response interceptor
 instance.interceptors.response.use(
   (response) => {
@@ -30,7 +34,27 @@ instance.interceptors.response.use(
     log(resp)
     return resp
   },
-  (error) => {
+  async (error) => {
+    const config = error.config as BodyRetryConfig | undefined
+    const response = error.response
+    // Retry only directory reads rejected by the backend body guard.
+    // Keep the serialized body, headers, and cancellation settings unchanged.
+    if (
+      config &&
+      !axios.isCancel(error) &&
+      !config._openlistBodyRetried &&
+      config.method?.toLowerCase() === "post" &&
+      config.url === "/fs/list" &&
+      response?.status === 400 &&
+      response.data?.code === 400 &&
+      response.data?.message === "failed to read request body"
+    ) {
+      config._openlistBodyRetried = true
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      // Axios checks cancellation before dispatching the retried request.
+      return instance.request(config)
+    }
+
     // response error
     console.error(error) // for debug
     // notificationService.show({
